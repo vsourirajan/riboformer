@@ -1,7 +1,5 @@
 # riboformer
 
-## CBMF4761 Final Project by Vaibhav Sourirajan, Neil Kachappilly, Fernando Cauvi
-
 [Notes](https://docs.google.com/document/d/1EFYa5CW8N_3Y37szdR6jABegmJxG6Zz35qneyN1aUqM/edit?usp=sharing)
 
 ### Setup
