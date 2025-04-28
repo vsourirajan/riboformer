@@ -4,3 +4,4 @@ environment*
 .idea
 .vscode
 .pytest_cache
+predicted_vs_actual_density_heat_map.png
