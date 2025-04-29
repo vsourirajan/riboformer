@@ -1,38 +1,35 @@
-import numpy as np
-from sklearn.linear_model import Lasso
-from sklearn.linear_model import ElasticNet
-from sklearn.linear_model import LinearRegression
+import pandas as pd
+import torch
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error
-from sklearn.metrics import r2_score
+from sklearn.linear_model import LinearRegression, Lasso, ElasticNet
+from sklearn.metrics import mean_squared_error, r2_score
+import numpy as np
 from scipy.stats import pearsonr
 from scipy.stats import spearmanr
-import pandas as pd
 
-def encode_sequence(seq, max_len):
-    mapping = {'A': [1,0,0,0], 'C': [0,1,0,0], 'G': [0,0,1,0], 'T': [0,0,0,1]}
-    encoded = [mapping.get(nuc, [0,0,0,0]) for nuc in seq[:max_len]]
-    while len(encoded) < max_len:
-        encoded.append([0,0,0,0])
-    return np.array(encoded).flatten()
+def load_embeddings(path): 
+    df = pd.read_pickle(path)
+    return df
 
 def prepare_data(data_path):
     #load the data  
     df = pd.read_csv(data_path)
+    df_filtered = df[df['tx_sequence'].apply(len).between(500, 1500)].reset_index(drop=True)
+    bio_source_cols = [col for col in df_filtered.columns if 'bio_source' in col]
+    y = df_filtered[bio_source_cols].to_numpy()
 
-    #encode the sequence
-    X_numeric = df[['utr5_size', 'cds_size', 'utr3_size']].to_numpy()
-    sequences = df['tx_sequence'].tolist()
-    #X_seq = np.array([encode_sequence(seq, max_len=33681) for seq in sequences])
-    #X = np.hstack([X_numeric, X_seq])
-
-    bio_source_cols = [col for col in df.columns if 'bio_source' in col]
-    y = df[bio_source_cols].to_numpy()
-
-    return X_numeric, y
+    return y
 
 def main():
-    X, y = prepare_data('data/CLEANED_data_with_human_TE_cellline_all_plain.csv')
+    embeddings_df = load_embeddings("transcript_embeddings.pkl")
+    print(embeddings_df.head())
+
+    X = embeddings_df["embedding_mean"].to_numpy()
+    X = np.stack(X) 
+    y = prepare_data('data/CLEANED_data_with_human_TE_cellline_all_plain.csv')
+
+    print(f"X shape: {X.shape}")
+    print(f"y shape: {y.shape}")
 
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
@@ -44,6 +41,7 @@ def main():
     print(f"R2_LINEAR_REGRESSION: {r2_score(y_val, y_pred)}")
     # print("PEARSON CORRELATION: ", pearsonr(y_val, y_pred))
     # print("SPEARMAN CORRELATION: ", spearmanr(y_val, y_pred))
+
 
     lasso = Lasso(alpha=0.1)
     lasso.fit(X_train, y_train)
@@ -66,3 +64,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
