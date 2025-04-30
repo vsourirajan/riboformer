@@ -1,125 +1,175 @@
-# Full script to train a simple DNA Transformer
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, Subset
 import pandas as pd
-import random
+import numpy as np
+from sklearn.model_selection import KFold
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+from scipy.stats import pearsonr, spearmanr
+from tqdm import tqdm
+import os
+import json
+from transformers import BertTokenizer, BertModel
+import warnings
+warnings.filterwarnings('ignore')
+import math
+from transformers import AutoTokenizer
 
-# ------------- Tokenizer -------------
-token_dict = {'A': 0, 'T': 1, 'G': 2, 'C': 3, 'U': 4}
+def prepare_data(data_path):
+    df = pd.read_csv(data_path)
+    bio_source_cols = [col for col in df.columns if 'bio_source' in col]
+    y = df[bio_source_cols].to_numpy()
+    return y
 
-def tokenize(seq):
-    return [token_dict.get(c, 0) for c in seq]
-
-# ------------- Dataset Class -------------
-class SequenceDataset(Dataset):
-    def __init__(self, sequences, labels):
+class DNADataset(Dataset):
+    def __init__(self, sequences, labels, tokenizer, max_length=512):
         self.sequences = sequences
         self.labels = labels
+        self.tokenizer = tokenizer
+        self.max_length = max_length
 
     def __len__(self):
         return len(self.sequences)
 
     def __getitem__(self, idx):
-        seq = torch.tensor(tokenize(self.sequences[idx]), dtype=torch.long)
-        label = torch.tensor(self.labels[idx], dtype=torch.float32)
-        return seq, label
+        sequence = self.sequences[idx]
+        label = self.labels[idx]
+        encoding = self.tokenizer(
+            sequence,
+            add_special_tokens=True,
+            max_length=self.max_length,
+            padding='max_length',
+            truncation=True,
+            return_tensors='pt'
+        )
+        return {
+            'input_ids': encoding['input_ids'].flatten(),
+            'attention_mask': encoding['attention_mask'].flatten(),
+            'labels': torch.tensor(label, dtype=torch.float)
+        }
 
-# ------------- Collate Function (for padding) -------------
-def collate_fn(batch):
-    sequences, labels = zip(*batch)
-    sequences = nn.utils.rnn.pad_sequence(sequences, batch_first=True, padding_value=0)
-    labels = torch.stack(labels)
-    return sequences, labels
-
-# ------------- Transformer Model -------------
-class SimpleDNATransformer(nn.Module):
-    def __init__(self, vocab_size, embed_dim, num_heads, num_layers, output_dim):
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=512):
         super().__init__()
-        self.embedding = nn.Embedding(vocab_size, embed_dim)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=embed_dim, nhead=num_heads)
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.fc = nn.Linear(embed_dim, output_dim)
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
 
     def forward(self, x):
-        x = self.embedding(x)
-        x = self.transformer(x)
-        x = x.mean(dim=1)  # Global average pooling
-        return self.fc(x)
+        return x + self.pe[:x.size(0)]
 
-# ------------- Training Loop -------------
-def train(model, dataloader, optimizer, criterion, device):
-    model.train()
-    running_loss = 0.0
-    for inputs, targets in dataloader:
-        inputs, targets = inputs.to(device), targets.to(device)
-        optimizer.zero_grad()
-        outputs = model(inputs)
-        loss = criterion(outputs, targets)
-        loss.backward()
-        optimizer.step()
-        running_loss += loss.item()
-    return running_loss / len(dataloader)
+class DNATransformer(nn.Module):
+    def __init__(self, vocab_size, d_model=768, nhead=4, num_layers=4, dim_feedforward=256, dropout=0.1):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.pos_encoder = PositionalEncoding(d_model)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=dropout)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.fc = nn.Linear(d_model, 78)
+        self.init_weights()
 
-def evaluate(model, dataloader, criterion, device):
-    model.eval()
-    running_loss = 0.0
-    with torch.no_grad():
-        for inputs, targets in dataloader:
-            inputs, targets = inputs.to(device), targets.to(device)
-            outputs = model(inputs)
-            loss = criterion(outputs, targets)
-            running_loss += loss.item()
-    return running_loss / len(dataloader)
+    def init_weights(self):
+        initrange = 0.1
+        self.embedding.weight.data.uniform_(-initrange, initrange)
+        self.fc.bias.data.zero_()
+        self.fc.weight.data.uniform_(-initrange, initrange)
 
-def prepare_data(data_path):
-    df = pd.read_csv(data_path)
-    df_filtered = df[df['tx_sequence'].apply(len).between(500, 1500)].reset_index(drop=True)
-    bio_source_cols = [col for col in df_filtered.columns if 'bio_source' in col]
-    sequences = df_filtered['tx_sequence'].tolist()
-    labels = df_filtered[bio_source_cols].to_numpy()
-    return sequences, labels
+    def forward(self, src, src_mask=None):
+        src = self.embedding(src) * math.sqrt(self.embedding.embedding_dim)
+        src = self.pos_encoder(src)
+        output = self.transformer_encoder(src, src_mask)
+        output = output.mean(dim=1)
+        output = self.fc(output)
+        return output
 
-if __name__ == "__main__":
-    embed_dim = 64
-    num_heads = 4
-    num_layers = 2
-    output_dim = 78
-    batch_size = 8
-    num_epochs = 10
-    learning_rate = 1e-3
-    data_path = "data/CLEANED_data_with_human_TE_cellline_all_plain.csv"
-
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-
-    # Load Data
-    sequences, labels = prepare_data(data_path)
-    dataset = SequenceDataset(sequences, labels)
-
-    # Train/Test Split
-    train_size = int(0.8 * len(dataset))
-    test_size = len(dataset) - train_size
-    train_dataset, test_dataset = random_split(dataset, [train_size, test_size])
-
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
-
-    # Model
-    model = SimpleDNATransformer(vocab_size=5, embed_dim=embed_dim, num_heads=num_heads, num_layers=num_layers, output_dim=output_dim)
-    model = model.to(device)
-
-    # Optimizer and Loss
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    criterion = nn.MSELoss()
-
-    # Training Loop
+def train_model(model, train_loader, val_loader, criterion, optimizer, device, num_epochs=10):
+    best_val_loss = float('inf')
     for epoch in range(num_epochs):
-        train_loss = train(model, train_loader, optimizer, criterion, device)
-        test_loss = evaluate(model, test_loader, criterion, device)
-        print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
+        model.train()
+        for _, batch in enumerate(tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs}')):
+            input_ids = batch['input_ids'].to(device)
+            labels = batch['labels'].to(device)
+            optimizer.zero_grad()
+            outputs = model(input_ids)
 
-    # Save model
-    torch.save(model.state_dict(), "dna_transformer.pth")
-    print("Training complete and model saved.")
+            loss = criterion(outputs.squeeze(), labels)
+            loss.backward()
+            optimizer.step()
+            
+        val_loss, val_metrics = evaluate_model(model, val_loader, criterion, device)
+        print(f'Epoch {epoch+1}/{num_epochs}:')
+        print(f'Training loss: {loss.item():.4f}, Validation loss: {val_loss:.4f}')
+        print(f'Validation metrics: {val_metrics}')
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), 'best_model.pth')
+
+def evaluate_model(model, data_loader, criterion, device):
+    model.eval()
+    total_loss = 0
+    all_preds = []
+    all_labels = []
+    with torch.no_grad():
+        for batch in data_loader:
+            input_ids = batch['input_ids'].to(device)
+            labels = batch['labels'].to(device)
+            outputs = model(input_ids)
+            loss = criterion(outputs.squeeze(), labels)
+            total_loss += loss.item()
+            all_preds.append(outputs.cpu().numpy())
+            all_labels.append(labels.cpu().numpy())
+    
+    all_preds = np.concatenate(all_preds, axis=0)
+    all_labels = np.concatenate(all_labels, axis=0)
+    
+    y_true_mean = np.mean(all_labels, axis=1)
+    y_pred_mean = np.mean(all_preds, axis=1)
+    
+    metrics = {
+        'mse': mean_squared_error(y_true_mean, y_pred_mean),
+        'r2': r2_score(y_true_mean, y_pred_mean),
+        'pearson': pearsonr(y_true_mean, y_pred_mean).statistic,
+        'spearman': spearmanr(y_true_mean, y_pred_mean).statistic
+    }
+    
+    return total_loss / len(data_loader), metrics
+
+def main():
+    device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+    print(f'Using device: {device}')
+    data = pd.read_csv('data/final_data.csv')
+    data = data.dropna()
+    sequences = data['tx_sequence'].tolist()
+    labels = prepare_data('data/final_data.csv')
+    tokenizer = AutoTokenizer.from_pretrained("zhihan1996/DNABERT-2-117M", trust_remote_code=True)
+
+    dataset = DNADataset(sequences, labels, tokenizer)
+    kf = KFold(n_splits=10, shuffle=True, random_state=42)
+    fold_metrics = []
+    for fold, (train_idx, val_idx) in enumerate(kf.split(dataset)):
+        print(f'\nFold {fold+1}/10')
+        train_subsampler = torch.utils.data.SubsetRandomSampler(train_idx)
+        val_subsampler = torch.utils.data.SubsetRandomSampler(val_idx)
+        train_loader = DataLoader(dataset, batch_size=32, sampler=train_subsampler)
+        val_loader = DataLoader(dataset, batch_size=32, sampler=val_subsampler)
+        model = DNATransformer(vocab_size=tokenizer.vocab_size).to(device)
+        criterion = nn.MSELoss()
+        optimizer = optim.Adam(model.parameters(), lr=1e-5)
+        train_model(model, train_loader, val_loader, criterion, optimizer, device, num_epochs=100)
+        val_loss, val_metrics = evaluate_model(model, val_loader, criterion, device)
+        fold_metrics.append(val_metrics)
+        print(f'Fold {fold+1} validation metrics: {val_metrics}')
+    avg_metrics = {
+        metric: np.mean([fold[metric] for fold in fold_metrics])
+        for metric in fold_metrics[0].keys()
+    }
+    print('\nAverage metrics across all folds:')
+    for metric, value in avg_metrics.items():
+        print(f'{metric}: {value:.4f}')
+
+if __name__ == '__main__':
+    main()
