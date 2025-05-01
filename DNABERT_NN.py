@@ -8,6 +8,7 @@ from scipy.stats import pearsonr, spearmanr
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
+from matplotlib import pyplot as plt
 
 def load_embeddings(path): 
     df = pd.read_pickle(path)
@@ -69,6 +70,36 @@ class SimpleNN(nn.Module):
     def forward(self, x):
         x = self.fc(x)
         return x
+    
+def plot_predictions(y_test, y_pred, fold):
+    #average the predictions and observations by row
+    y_pred_avg = np.mean(y_pred, axis=1)
+    y_test_avg = np.mean(y_test, axis=1)
+    print(y_pred_avg.shape)
+
+    # Create 2D histogram
+    plt.figure(figsize=(6, 6))
+    # hb = plt.hexbin(y_pred_avg, y_test_avg, gridsize=100, cmap='hot', mincnt=1)
+
+    # # Add colorbar
+    # cb = plt.colorbar(hb)
+    # cb.set_label('Density')
+    plt.plot(y_pred_avg, y_test_avg, 'o', markersize=5, alpha=0.5)
+    
+    #add dotted line from -2,-2 to 3,3
+    plt.plot([-2, 3], [-2, 3], 'k--', lw=1)
+
+    # Labels and title
+    plt.xlabel('DNABERT+NN prediction (human)')
+    plt.ylabel('Observed Mean TE (human)')
+    plt.title('Observed Mean TE vs. DNABERT+NN Mean TE Prediction')
+
+    # Optional: Set axis limits similar to your image
+    plt.xlim(-2, 3)
+    plt.ylim(-2, 3)
+
+    # Save the plot
+    plt.savefig(f"Num_Feat+Embedding_fold_{fold}")
 
 def train_test_nn(X_train, y_train, X_test, y_test, input_dim, output_dim, epochs=50, lr=0.001):
     model = SimpleNN(input_dim, output_dim)
@@ -107,7 +138,6 @@ def main():
 
     X = embeddings_df["embedding_mean"].to_numpy()
     X = np.stack(X) 
-    # currently worsens performance
     x_cols, y = prepare_data('data/final_data.csv')
     
     X = np.concatenate((X, x_cols), axis=1)
@@ -138,6 +168,7 @@ def main():
         y_pred = train_test_nn(X_train, y_train, X_test, y_test, input_dim=X.shape[1], output_dim=y.shape[1])
         y_pred = y_scaler.inverse_transform(y_pred)
         y_test = y_scaler.inverse_transform(y_test)
+        plot_predictions(y_test, y_pred, fold)
         metrics = calculate_metrics(y_test, y_pred)
         nn_metrics.append(metrics)
     
