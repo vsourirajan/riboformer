@@ -49,6 +49,6 @@
 
 ### Sample Experiment Run
 ```
-source activate riboformer                              # activates the conda environment set up above
-nohup python dna_transformer.py > out.log 2>&1 &        # runs the script as a nohup command and pushes all output to out.log
+$ source activate riboformer                              # activates the conda environment set up above
+$ nohup python dna_transformer.py > out.log 2>&1 &        # runs the script as a nohup command and pushes all output to out.log
 ```
