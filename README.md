@@ -48,6 +48,13 @@
 
 
 ### Sample Experiment Run
+
+#### Running the Baseline (10 seconds):
+```
+$ source activate riboformer                                  # activates the conda environment set up above
+$ nohup python baseline_regression.py > out.log 2>&1 &        # runs the script as a nohup command and pushes all output to out.log
+```
+#### Running Transformer from Scratch (12 hours):
 ```
 $ source activate riboformer                              # activates the conda environment set up above
 $ nohup python dna_transformer.py > out.log 2>&1 &        # runs the script as a nohup command and pushes all output to out.log
